@@ -827,30 +827,161 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
               UPI Payment
             </h3>
             <div className="bg-gray-50 rounded-xl p-6 mb-4">
-              {shop?.upi_qr_url ? (
+              {shop?.upi_qr_url || shop?.upi_id ? (
                 <div>
-                  <img 
-                    src={shop.upi_qr_url} 
-                    alt="UPI QR Code" 
-                    className="mx-auto w-48 h-48 object-contain rounded-lg shadow-lg border border-gray-200"
-                    onError={(e) => {
-                      console.error('QR Code failed to load:', shop.upi_qr_url);
-                      const target = e.currentTarget as HTMLImageElement;
-                      target.style.display = 'none';
-                      const parent = target.parentElement;
-                      if (parent) {
-                        parent.innerHTML = `
-                          <div class="text-center py-8">
-                            <div class="mx-auto text-gray-400 mb-2">⚠️</div>
-                            <p class="text-gray-600">Failed to load QR Code</p>
-                            <p class="text-xs text-gray-500 mt-1">Check URL in settings</p>
-                          </div>
-                        `;
-                      }
-                    }}
-                  />
+                  {shop.upi_qr_url ? (
+                    <div className="relative">
+                      <img 
+                        src={shop.upi_qr_url} 
+                        alt="UPI QR Code" 
+                        className="mx-auto w-48 h-48 object-contain rounded-lg shadow-lg border border-gray-200 bg-white"
+                        onLoad={() => {
+                          console.log('QR Code loaded successfully');
+                        }}
+                        onError={(e) => {
+                          console.error('QR Code failed to load:', shop.upi_qr_url);
+                          const target = e.currentTarget as HTMLImageElement;
+                          const parent = target.parentElement;
+                          if (parent) {
+                            // Try alternative QR generation methods
+                            const fallbackQR = generateFallbackQR(shop.upi_id || '', currentAmount);
+                            parent.innerHTML = fallbackQR;
+                          }
+                        }}
+                        style={{ 
+                          imageRendering: 'pixelated',
+                          imageRendering: '-moz-crisp-edges',
+                          imageRendering: 'crisp-edges'
+                        }}
+                      />
+                      <div className="absolute inset-0 bg-white opacity-0 hover:opacity-10 transition-opacity rounded-lg"></div>
+                    </div>
+                  ) : (
+                    <div className="w-48 h-48 mx-auto">
+                      {generateFallbackQRComponent(shop.upi_id || '', currentAmount)}
+                    </div>
+                  )}
                   {shop.upi_id && (
-                    <p className="text-sm text-gray-600 mt-3 text-center font-mono bg-white px-3 py-1 rounded border">
+                    <div className="mt-4 space-y-2">
+                      <p className="text-xs text-gray-500">UPI ID:</p>
+                      <div className="bg-white px-3 py-2 rounded-lg border border-gray-200 font-mono text-sm text-gray-800 break-all select-all">
+                        {shop.upi_id}
+                      </div>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(shop.upi_id || '');
+                          // Show copied feedback
+                          const btn = document.activeElement as HTMLButtonElement;
+                          const originalText = btn.textContent;
+                          btn.textContent = 'Copied!';
+                          setTimeout(() => {
+                            btn.textContent = originalText;
+                          }, 1000);
+                        }}
+                        className="text-xs bg-blue-50 hover:bg-blue-100 text-blue-600 px-3 py-1 rounded-full transition-colors"
+                      >
+                        Copy UPI ID
+                      </button>
+                    </div>
+                  )}
+                  
+                  {/* Multiple QR Generation Options */}
+                  <div className="mt-4 grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => {
+                        const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=upi://pay?pa=${shop.upi_id}&am=${currentAmount}&cu=INR`;
+                        const img = document.querySelector('.qr-image') as HTMLImageElement;
+                        if (img) img.src = qrUrl;
+                      }}
+                      className="text-xs bg-green-50 hover:bg-green-100 text-green-600 px-2 py-1 rounded transition-colors"
+                    >
+                      QR Server
+                    </button>
+                    <button
+                      onClick={() => {
+                        const qrUrl = `https://chart.googleapis.com/chart?chs=200x200&cht=qr&chl=upi://pay?pa=${shop.upi_id}&am=${currentAmount}&cu=INR`;
+                        const img = document.querySelector('.qr-image') as HTMLImageElement;
+                        if (img) img.src = qrUrl;
+                      }}
+                      className="text-xs bg-purple-50 hover:bg-purple-100 text-purple-600 px-2 py-1 rounded transition-colors"
+                    >
+                      Google QR
+                    </button>
+                  </div>
+                  
+                  {/* Manual UPI Link */}
+                  <div className="mt-4">
+                    <button
+                      onClick={() => {
+                        const upiLink = `upi://pay?pa=${shop.upi_id}&am=${currentAmount}&cu=INR&tn=Payment`;
+                        window.open(upiLink, '_blank');
+                      }}
+                      className="w-full bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white py-2 px-4 rounded-lg font-medium transition-all"
+                    >
+                      Open UPI App Directly
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-8">
+                  <QrCode className="mx-auto text-gray-400 mb-4" size={64} />
+                  <p className="text-gray-600 mb-2">UPI Payment Setup Required</p>
+                  <p className="text-xs text-gray-500 mb-4">Configure UPI ID or QR URL in owner settings</p>
+                  
+                  {/* Generic QR Code Generator */}
+                  <div className="space-y-3">
+                    <input
+                      type="text"
+                      placeholder="Enter UPI ID (e.g., user@paytm)"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                      onBlur={(e) => {
+                        if (e.target.value) {
+                          const qrContainer = document.querySelector('.temp-qr-container');
+                          if (qrContainer) {
+                            qrContainer.innerHTML = generateFallbackQR(e.target.value, currentAmount);
+                          }
+                        }
+                      }}
+                    />
+                    <div className="temp-qr-container"></div>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="text-center mb-4">
+              <p className="text-sm text-gray-600 mb-1">Amount to Pay</p>
+              <p className="text-2xl font-bold text-purple-600">
+                {formatCurrency(currentAmount)}
+              </p>
+            </div>
+            <p className="text-sm text-gray-500 text-center mb-4">
+              Scan QR code, use UPI ID, or click "Open UPI App" to pay
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => setShowUpiQr(false)}
+                className="py-3 bg-gray-500 hover:bg-gray-600 text-white font-bold rounded-xl"
+              >
+                Back
+              </button>
+              <button
+                onClick={confirmUpiPayment}
+                disabled={isProcessing}
+                className="py-3 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl disabled:opacity-50"
+              >
+                {isProcessing ? 'Processing...' : 'Payment Done'}
+              </button>
+            </div>
+            <div className="mt-4 text-center">
+              <p className="text-xs text-gray-500">
+                Click "Payment Done" after completing the UPI payment
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Success Modal */}
                       {shop.upi_id}
                     </p>
                   )}
