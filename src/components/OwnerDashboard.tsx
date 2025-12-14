@@ -1,25 +1,5 @@
 import { useState, useEffect } from 'react';
-import { 
-  LogOut, 
-  Crown, 
-  Users, 
-  Package, 
-  TrendingUp, 
-  Settings, 
-  Plus, 
-  Edit, 
-  Trash2, 
-  Eye, 
-  EyeOff,
-  Save,
-  X,
-  QrCode,
-  Upload,
-  Calculator,
-  DollarSign,
-  ShoppingCart,
-  AlertTriangle
-} from 'lucide-react';
+import { LogOut, Crown, Users, Package, TrendingUp, Settings, Plus, CreditCard as Edit, Trash2, Eye, EyeOff, Save, X, QrCode, Upload, Calculator, DollarSign, ShoppingCart, AlertTriangle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase, hashPasscode } from '../lib/supabase';
 import { Item, Staff, Transaction, Shop } from '../types/database';
