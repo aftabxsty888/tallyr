@@ -95,34 +95,31 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
         return false;
       }
 
-      // For demo purposes, check against known staff passcodes
-      if (passcode === '129' || passcode === '456') {
-        const { data: staffData, error: staffError } = await supabase
-          .from('staff')
-          .select('*')
-          .eq('shop_id', shopId)
-          .eq('is_active', true)
-          .limit(1)
-          .single();
+      // Find staff member with matching passcode
+      const { data: staffData, error: staffError } = await supabase
+        .from('staff')
+        .select('*')
+        .eq('shop_id', shopId)
+        .eq('passcode_hash', passcode) // In production, this should be hashed
+        .eq('is_active', true)
+        .single();
 
-        if (staffError || !staffData) {
-          console.error('Staff not found:', staffError);
-          return false;
-        }
-
-        setShop(shopData);
-        setStaff(staffData);
-        setUserRole('staff');
-
-        localStorage.setItem('tallyra-auth', JSON.stringify({
-          shop: shopData,
-          staff: staffData,
-          role: 'staff'
-        }));
-
-        return true;
-      }
+      if (staffError || !staffData) {
+        console.error('Staff not found or invalid passcode:', staffError);
         return false;
+      }
+
+      setShop(shopData);
+      setStaff(staffData);
+      setUserRole('staff');
+
+      localStorage.setItem('tallyra-auth', JSON.stringify({
+        shop: shopData,
+        staff: staffData,
+        role: 'staff'
+      }));
+
+      return true;
     } catch (error) {
       console.error('Staff login error:', error);
       return false;

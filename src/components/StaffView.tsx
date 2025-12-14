@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { LogOut, User } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { supabase } from '../lib/supabase';
 import { Calculator } from './Calculator';
 import { Transaction } from '../types/database';
 
@@ -11,13 +12,64 @@ export const StaffView = () => {
   const [todayCount, setTodayCount] = useState(0);
 
   useEffect(() => {
-    updateStats();
-  }, []);
+    if (shop && staff) {
+      loadRecentTransactions();
+      setupRealtimeSubscription();
+    }
+  }, [shop, staff]);
 
-  const updateStats = () => {
-    // Calculate today's stats for this staff member
+  const setupRealtimeSubscription = () => {
+    if (!shop || !staff) return;
+
+    const subscription = supabase
+      .channel('staff-transactions')
+      .on('postgres_changes', 
+        { 
+          event: 'INSERT', 
+          schema: 'public', 
+          table: 'transactions',
+          filter: `shop_id=eq.${shop.id}`
+        },
+        (payload) => {
+          if (payload.new.staff_id === staff.id) {
+            loadRecentTransactions();
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  };
+
+  const loadRecentTransactions = async () => {
+    if (!shop || !staff) return;
+
+    try {
+      const { data } = await supabase
+        .from('transactions')
+        .select(`
+          *,
+          inferred_item:inferred_item_id(name)
+        `)
+        .eq('shop_id', shop.id)
+        .eq('staff_id', staff.id)
+        .order('created_at', { ascending: false })
+        .limit(10);
+
+      if (data) {
+        setRecentTransactions(data as any);
+        updateStats(data);
+      }
+    } catch (error) {
+      console.error('Error loading transactions:', error);
+    }
+  };
+
+  const updateStats = (transactions: Transaction[]) => {
     const today = new Date().toDateString();
-    const todayTransactions = recentTransactions.filter(t => 
+    const todayTransactions = transactions.filter(t => 
       new Date(t.created_at).toDateString() === today
     );
     
@@ -26,8 +78,7 @@ export const StaffView = () => {
   };
 
   const handleTransactionComplete = (transaction: Transaction) => {
-    setRecentTransactions([transaction, ...recentTransactions.slice(0, 4)]);
-    updateStats();
+    loadRecentTransactions();
   };
 
   return (
@@ -89,8 +140,8 @@ export const StaffView = () => {
                 <p className="text-sm">Complete your first sale to see it here</p>
               </div>
             ) : (
-              <div className="space-y-4">
-                {recentTransactions.map((transaction, index) => (
+              <div className="space-y-4 max-h-96 overflow-y-auto">
+                {recentTransactions.map((transaction) => (
                   <div
                     key={transaction.id}
                     className="flex items-center justify-between p-4 bg-gray-50 rounded-xl"
@@ -101,6 +152,9 @@ export const StaffView = () => {
                       </p>
                       <p className="text-sm text-gray-600">
                         {new Date(transaction.created_at).toLocaleTimeString()}
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {(transaction as any).inferred_item?.name || 'Unknown Item'}
                       </p>
                     </div>
                     

@@ -1,14 +1,15 @@
 import { useState, useEffect } from 'react';
-import { CreditCard, Smartphone, Banknote, Trash2, Check, AlertTriangle, QrCode, CheckCircle } from 'lucide-react';
+import { CreditCard, Smartphone, Banknote, Trash2, Check, AlertTriangle, QrCode, CheckCircle, Upload } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Item, Transaction } from '../types/database';
 
 interface CalculatorProps {
   onTransactionComplete?: (transaction: Transaction) => void;
+  isOwner?: boolean;
 }
 
-export const Calculator = ({ onTransactionComplete }: CalculatorProps) => {
+export const Calculator = ({ onTransactionComplete, isOwner = false }: CalculatorProps) => {
   const { shop, staff } = useAuth();
   const [display, setDisplay] = useState('0');
   const [items, setItems] = useState<Item[]>([]);
@@ -17,7 +18,6 @@ export const Calculator = ({ onTransactionComplete }: CalculatorProps) => {
   const [discountAmount, setDiscountAmount] = useState(0);
   const [showDiscountWarning, setShowDiscountWarning] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [showQRCode, setShowQRCode] = useState(false);
   const [cashReceived, setCashReceived] = useState(0);
   const [showCashInput, setShowCashInput] = useState(false);
   const [discountOverride, setDiscountOverride] = useState(false);
@@ -27,7 +27,6 @@ export const Calculator = ({ onTransactionComplete }: CalculatorProps) => {
   const [changeAmount, setChangeAmount] = useState(0);
   const [showChange, setShowChange] = useState(false);
   const [error, setError] = useState('');
-  const [showDiscountConfirm, setShowDiscountConfirm] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
   // Derived state
@@ -66,11 +65,19 @@ export const Calculator = ({ onTransactionComplete }: CalculatorProps) => {
   };
 
   const handleNumberClick = (num: string) => {
-    setError(''); // Clear any previous errors
+    setError('');
     if (display === '0' || display === 'Error') {
       setDisplay(num);
     } else {
       setDisplay(display + num);
+    }
+  };
+
+  const handleBackspace = () => {
+    if (display.length > 1) {
+      setDisplay(display.slice(0, -1));
+    } else {
+      setDisplay('0');
     }
   };
 
@@ -82,7 +89,6 @@ export const Calculator = ({ onTransactionComplete }: CalculatorProps) => {
     setShowDiscountWarning(false);
     setCashReceived(0);
     setShowCashInput(false);
-    setShowQRCode(false);
     setShowUpiQr(false);
     setDiscountOverride(false);
     setShowSuccess(false);
@@ -90,23 +96,19 @@ export const Calculator = ({ onTransactionComplete }: CalculatorProps) => {
     setChangeAmount(0);
     setSelectedPaymentMode(null);
     setError('');
-    setShowDiscountConfirm(false);
   };
 
   const inferItemFromAmount = (amount: number) => {
     if (!items.length) return { item: null, discount: 0 };
     
-    // Smart inference logic - find best match considering discounts
     let bestMatch = null;
     let smallestDifference = Infinity;
     
     for (const item of items) {
-      // Check if amount matches base price exactly
       if (amount === item.base_price) {
         return { item, discount: 0 };
       }
       
-      // Check if amount is within discount range
       const maxDiscount = Math.max(
         (item.base_price * (item.max_discount_percentage || 0)) / 100,
         item.max_discount_fixed || 0
@@ -122,7 +124,6 @@ export const Calculator = ({ onTransactionComplete }: CalculatorProps) => {
       }
     }
     
-    // If no exact match found, find closest by price
     if (!bestMatch) {
       for (const item of items) {
         const difference = Math.abs(amount - item.base_price);
@@ -176,7 +177,6 @@ export const Calculator = ({ onTransactionComplete }: CalculatorProps) => {
     setInferredItem(item);
     setDiscountAmount(discount);
 
-    // Check if discount exceeds limits
     const discountPercentage = (discount / item.base_price) * 100;
     const exceedsPercentageLimit = discountPercentage > (item.max_discount_percentage || 0);
     const exceedsFixedLimit = discount > (item.max_discount_fixed || 0);
@@ -199,7 +199,7 @@ export const Calculator = ({ onTransactionComplete }: CalculatorProps) => {
   };
 
   const handlePayment = async (mode: 'CASH' | 'UPI' | 'CREDIT', cashAmount?: number) => {
-    if (!currentAmount || !inferredItem || !shop || !staff) return;
+    if (!currentAmount || !inferredItem || !shop) return;
     
     setIsProcessing(true);
     setError('');
@@ -207,15 +207,16 @@ export const Calculator = ({ onTransactionComplete }: CalculatorProps) => {
     try {
       const discount = calculateDiscount(currentAmount, inferredItem.base_price);
       const needsOverride = !isDiscountAllowed(inferredItem, currentAmount);
-      
       const changeAmount = cashAmount ? Math.max(0, cashAmount - currentAmount) : 0;
       
-      // Create transaction
+      // Use staff ID if available, otherwise use a default for owner
+      const staffId = staff?.id || 'owner-transaction';
+      
       const { data: transaction, error: transactionError } = await supabase
         .from('transactions')
         .insert({
           shop_id: shop.id,
-          staff_id: staff.id,
+          staff_id: staffId,
           entered_amount: currentAmount,
           inferred_item_id: inferredItem.id,
           base_price: inferredItem.base_price,
@@ -234,7 +235,6 @@ export const Calculator = ({ onTransactionComplete }: CalculatorProps) => {
         throw transactionError;
       }
       
-      // Update inventory
       const newQuantity = Math.max(0, (inferredItem.stock_quantity || 0) - 1);
       
       await supabase
@@ -242,7 +242,6 @@ export const Calculator = ({ onTransactionComplete }: CalculatorProps) => {
         .update({ stock_quantity: newQuantity })
         .eq('id', inferredItem.id);
       
-      // Record inventory movement
       await supabase
         .from('inventory_movements')
         .insert({
@@ -255,7 +254,6 @@ export const Calculator = ({ onTransactionComplete }: CalculatorProps) => {
           new_quantity: newQuantity
         });
       
-      // Show success with change amount if applicable
       if (changeAmount > 0) {
         setChangeAmount(changeAmount);
         setShowChange(true);
@@ -263,7 +261,6 @@ export const Calculator = ({ onTransactionComplete }: CalculatorProps) => {
         setShowSuccess(true);
       }
       
-      // Call callback if provided
       if (onTransactionComplete) {
         onTransactionComplete(transaction);
       }
@@ -302,17 +299,6 @@ export const Calculator = ({ onTransactionComplete }: CalculatorProps) => {
     handlePayment('CREDIT');
   };
 
-  const handleDiscountOverride = (confirm: boolean) => {
-    if (confirm) {
-      setDiscountOverride(true);
-      setShowDiscountConfirm(false);
-      setShowPaymentModes(true);
-    } else {
-      setShowDiscountConfirm(false);
-      handleClear();
-    }
-  };
-
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('en-IN', {
       style: 'currency',
@@ -322,7 +308,6 @@ export const Calculator = ({ onTransactionComplete }: CalculatorProps) => {
     }).format(amount);
   };
 
-  // Auto-infer item when amount changes
   useEffect(() => {
     if (currentAmount > 0) {
       const { item } = inferItemFromAmount(currentAmount);
@@ -344,144 +329,141 @@ export const Calculator = ({ onTransactionComplete }: CalculatorProps) => {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 p-4">
-      <div className="max-w-md mx-auto">
-        {/* Header */}
-        <div className="text-center mb-6">
-          <h1 className="text-2xl font-bold text-gray-800 mb-1">{shop?.name}</h1>
-          <p className="text-gray-600">Staff: {staff?.name}</p>
-        </div>
-
-        {/* Calculator Display */}
-        <div className="bg-white rounded-3xl shadow-xl p-6 mb-6">
-          {/* Amount Display */}
-          <div className="bg-gray-900 rounded-2xl p-6 mb-6">
-            <div className="text-right">
-              <div className="text-3xl font-mono text-green-400 mb-2">
-                {currentAmount > 0 ? formatCurrency(currentAmount) : '₹0'}
+    <div className="bg-white rounded-3xl shadow-xl p-6">
+      {/* Amount Display */}
+      <div className="bg-gray-900 rounded-2xl p-6 mb-6">
+        <div className="text-right">
+          <div className="text-3xl font-mono text-green-400 mb-2">
+            {currentAmount > 0 ? formatCurrency(currentAmount) : '₹0'}
+          </div>
+          {inferredItem && (
+            <div className="text-sm text-gray-400">
+              <div>{inferredItem.name}</div>
+              <div className="flex justify-between mt-1">
+                <span>Base: {formatCurrency(inferredItem.base_price)}</span>
+                {currentAmount < inferredItem.base_price && (
+                  <span className="text-orange-400">
+                    Discount: {formatCurrency(inferredItem.base_price - currentAmount)}
+                  </span>
+                )}
               </div>
-              {inferredItem && (
-                <div className="text-sm text-gray-400">
-                  <div>{inferredItem.name}</div>
-                  <div className="flex justify-between mt-1">
-                    <span>Base: {formatCurrency(inferredItem.base_price)}</span>
-                    {currentAmount < inferredItem.base_price && (
-                      <span className="text-orange-400">
-                        Discount: {formatCurrency(inferredItem.base_price - currentAmount)}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Number Pad */}
-          <div className="grid grid-cols-3 gap-3 mb-6">
-            {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
-              <button
-                key={num}
-                onClick={() => handleNumberClick(num.toString())}
-                className="h-16 bg-gray-100 hover:bg-gray-200 text-xl font-semibold text-gray-800
-                           rounded-xl transition-all duration-150 active:scale-95"
-                disabled={isProcessing}
-              >
-                {num}
-              </button>
-            ))}
-            <button
-              onClick={() => handleNumberClick('00')}
-              className="h-16 bg-gray-100 hover:bg-gray-200 text-xl font-semibold text-gray-800
-                         rounded-xl transition-all duration-150 active:scale-95"
-              disabled={isProcessing}
-            >
-              00
-            </button>
-            <button
-              onClick={() => handleNumberClick('0')}
-              className="h-16 bg-gray-100 hover:bg-gray-200 text-xl font-semibold text-gray-800
-                         rounded-xl transition-all duration-150 active:scale-95"
-              disabled={isProcessing}
-            >
-              0
-            </button>
-            <button
-              onClick={handleClear}
-              className="h-16 bg-red-500 hover:bg-red-600 text-white text-lg font-semibold
-                         rounded-xl transition-all duration-150 active:scale-95"
-              disabled={isProcessing}
-            >
-              Clear
-            </button>
-          </div>
-
-          {/* Payment Buttons */}
-          {currentAmount > 0 && inferredItem && !showPaymentModes && (
-            <button
-              onClick={handleConfirmAmount}
-              className="w-full py-4 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800
-                         text-white text-lg font-semibold rounded-xl transition-all duration-200 active:scale-95"
-              disabled={isProcessing}
-            >
-              Continue to Payment
-            </button>
-          )}
-
-          {/* Payment Mode Selection */}
-          {showPaymentModes && !showCashInput && !showUpiQr && (
-            <div className="space-y-3">
-              <h3 className="text-lg font-semibold text-gray-800 text-center mb-4">
-                Choose Payment Method
-              </h3>
-              
-              <button
-                onClick={handleCashPayment}
-                className="w-full py-4 bg-green-600 hover:bg-green-700 text-white text-lg font-semibold
-                           rounded-xl transition-all duration-150 active:scale-95 flex items-center justify-center gap-2"
-                disabled={isProcessing}
-              >
-                <Banknote size={24} />
-                Cash Payment
-              </button>
-              
-              <button
-                onClick={handleUpiPayment}
-                className="w-full py-4 bg-purple-600 hover:bg-purple-700 text-white text-lg font-semibold
-                           rounded-xl transition-all duration-150 active:scale-95 flex items-center justify-center gap-2"
-                disabled={isProcessing}
-              >
-                <Smartphone size={24} />
-                UPI Payment
-              </button>
-              
-              <button
-                onClick={handleCreditPayment}
-                className="w-full py-4 bg-orange-600 hover:bg-orange-700 text-white text-lg font-semibold
-                           rounded-xl transition-all duration-150 active:scale-95 flex items-center justify-center gap-2"
-                disabled={isProcessing}
-              >
-                <CreditCard size={24} />
-                Credit Sale
-              </button>
-              
-              <button
-                onClick={() => setShowPaymentModes(false)}
-                className="w-full py-3 bg-gray-500 hover:bg-gray-600 text-white font-semibold
-                           rounded-xl transition-all duration-150 active:scale-95"
-              >
-                Back
-              </button>
             </div>
           )}
         </div>
-
-        {/* Error Display */}
-        {error && (
-          <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-xl mb-4">
-            {error}
-          </div>
-        )}
       </div>
+
+      {/* Number Pad */}
+      <div className="grid grid-cols-4 gap-3 mb-6">
+        {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
+          <button
+            key={num}
+            onClick={() => handleNumberClick(num.toString())}
+            className="h-16 bg-gray-100 hover:bg-gray-200 text-xl font-semibold text-gray-800
+                       rounded-xl transition-all duration-150 active:scale-95"
+            disabled={isProcessing}
+          >
+            {num}
+          </button>
+        ))}
+        <button
+          onClick={() => handleNumberClick('00')}
+          className="h-16 bg-gray-100 hover:bg-gray-200 text-xl font-semibold text-gray-800
+                     rounded-xl transition-all duration-150 active:scale-95"
+          disabled={isProcessing}
+        >
+          00
+        </button>
+        <button
+          onClick={() => handleNumberClick('0')}
+          className="h-16 bg-gray-100 hover:bg-gray-200 text-xl font-semibold text-gray-800
+                     rounded-xl transition-all duration-150 active:scale-95"
+          disabled={isProcessing}
+        >
+          0
+        </button>
+        <button
+          onClick={handleBackspace}
+          className="h-16 bg-orange-500 hover:bg-orange-600 text-white text-lg font-semibold
+                     rounded-xl transition-all duration-150 active:scale-95"
+          disabled={isProcessing}
+        >
+          ⌫
+        </button>
+        <button
+          onClick={handleClear}
+          className="h-16 bg-red-500 hover:bg-red-600 text-white text-lg font-semibold
+                     rounded-xl transition-all duration-150 active:scale-95"
+          disabled={isProcessing}
+        >
+          Clear
+        </button>
+      </div>
+
+      {/* Payment Buttons */}
+      {currentAmount > 0 && inferredItem && !showPaymentModes && (
+        <button
+          onClick={handleConfirmAmount}
+          className="w-full py-4 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800
+                     text-white text-lg font-semibold rounded-xl transition-all duration-200 active:scale-95"
+          disabled={isProcessing}
+        >
+          Continue to Payment
+        </button>
+      )}
+
+      {/* Payment Mode Selection */}
+      {showPaymentModes && !showCashInput && !showUpiQr && (
+        <div className="space-y-3">
+          <h3 className="text-lg font-semibold text-gray-800 text-center mb-4">
+            Choose Payment Method
+          </h3>
+          
+          <button
+            onClick={handleCashPayment}
+            className="w-full py-4 bg-green-600 hover:bg-green-700 text-white text-lg font-semibold
+                       rounded-xl transition-all duration-150 active:scale-95 flex items-center justify-center gap-2"
+            disabled={isProcessing}
+          >
+            <Banknote size={24} />
+            Cash Payment
+          </button>
+          
+          <button
+            onClick={handleUpiPayment}
+            className="w-full py-4 bg-purple-600 hover:bg-purple-700 text-white text-lg font-semibold
+                       rounded-xl transition-all duration-150 active:scale-95 flex items-center justify-center gap-2"
+            disabled={isProcessing}
+          >
+            <Smartphone size={24} />
+            UPI Payment
+          </button>
+          
+          <button
+            onClick={handleCreditPayment}
+            className="w-full py-4 bg-orange-600 hover:bg-orange-700 text-white text-lg font-semibold
+                       rounded-xl transition-all duration-150 active:scale-95 flex items-center justify-center gap-2"
+            disabled={isProcessing}
+          >
+            <CreditCard size={24} />
+            Credit Sale
+          </button>
+          
+          <button
+            onClick={() => setShowPaymentModes(false)}
+            className="w-full py-3 bg-gray-500 hover:bg-gray-600 text-white font-semibold
+                       rounded-xl transition-all duration-150 active:scale-95"
+          >
+            Back
+          </button>
+        </div>
+      )}
+
+      {/* Error Display */}
+      {error && (
+        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-xl mt-4">
+          {error}
+        </div>
+      )}
 
       {/* Modals */}
       
