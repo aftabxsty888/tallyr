@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { CreditCard, Smartphone, Banknote, Trash2, Check, AlertTriangle, QrCode, CheckCircle, Upload } from 'lucide-react';
+import { CreditCard, Smartphone, Banknote, Trash2, Check, AlertTriangle, QrCode, CheckCircle, Plus, Minus, X, ArrowLeft } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Item, Transaction } from '../types/database';
@@ -18,7 +18,7 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
   const [discountAmount, setDiscountAmount] = useState(0);
   const [showDiscountWarning, setShowDiscountWarning] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [cashReceived, setCashReceived] = useState(0);
+  const [cashReceived, setCashReceived] = useState('');
   const [showCashInput, setShowCashInput] = useState(false);
   const [discountOverride, setDiscountOverride] = useState(false);
   const [showUpiQr, setShowUpiQr] = useState(false);
@@ -28,6 +28,10 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
   const [showChange, setShowChange] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(true);
+  const [showCustomProduct, setShowCustomProduct] = useState(false);
+  const [customProduct, setCustomProduct] = useState({ name: '', price: '' });
+  const [showItemSelector, setShowItemSelector] = useState(false);
+  const [selectedCustomItem, setSelectedCustomItem] = useState<Item | null>(null);
 
   // Derived state
   const currentAmount = parseFloat(display) || 0;
@@ -35,8 +39,27 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
   useEffect(() => {
     if (shop) {
       loadItems();
+      setupRealtimeSubscription();
     }
   }, [shop]);
+
+  const setupRealtimeSubscription = () => {
+    if (!shop) return;
+
+    const subscription = supabase
+      .channel('calculator-items')
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'items', filter: `shop_id=eq.${shop.id}` },
+        () => {
+          loadItems();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  };
 
   const loadItems = async () => {
     if (!shop) return;
@@ -68,7 +91,7 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
     setError('');
     if (display === '0' || display === 'Error') {
       setDisplay(num);
-    } else {
+    } else if (display.length < 10) {
       setDisplay(display + num);
     }
   };
@@ -87,7 +110,7 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
     setInferredItem(null);
     setDiscountAmount(0);
     setShowDiscountWarning(false);
-    setCashReceived(0);
+    setCashReceived('');
     setShowCashInput(false);
     setShowUpiQr(false);
     setDiscountOverride(false);
@@ -96,19 +119,32 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
     setChangeAmount(0);
     setSelectedPaymentMode(null);
     setError('');
+    setShowCustomProduct(false);
+    setShowItemSelector(false);
+    setSelectedCustomItem(null);
   };
 
   const inferItemFromAmount = (amount: number) => {
     if (!items.length) return { item: null, discount: 0 };
     
+    // If custom item is selected, use it
+    if (selectedCustomItem) {
+      const discount = Math.max(0, selectedCustomItem.base_price - amount);
+      return { item: selectedCustomItem, discount };
+    }
+    
     let bestMatch = null;
     let smallestDifference = Infinity;
     
+    // First, try exact match
     for (const item of items) {
       if (amount === item.base_price) {
         return { item, discount: 0 };
       }
-      
+    }
+    
+    // Then try within discount range
+    for (const item of items) {
       const maxDiscount = Math.max(
         (item.base_price * (item.max_discount_percentage || 0)) / 100,
         item.max_discount_fixed || 0
@@ -124,6 +160,7 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
       }
     }
     
+    // Finally, find closest match
     if (!bestMatch) {
       for (const item of items) {
         const difference = Math.abs(amount - item.base_price);
@@ -164,7 +201,7 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
   const handleConfirmAmount = () => {
     const amount = parseFloat(display);
     if (isNaN(amount) || amount <= 0) {
-      setDisplay('Error');
+      setError('Please enter a valid amount');
       return;
     }
 
@@ -181,7 +218,7 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
     const exceedsPercentageLimit = discountPercentage > (item.max_discount_percentage || 0);
     const exceedsFixedLimit = discount > (item.max_discount_fixed || 0);
 
-    if (discount > 0 && (exceedsPercentageLimit || exceedsFixedLimit)) {
+    if (discount > 0 && (exceedsPercentageLimit || exceedsFixedLimit) && !isOwner) {
       setShowDiscountWarning(true);
     } else {
       setShowPaymentModes(true);
@@ -235,6 +272,7 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
         throw transactionError;
       }
       
+      // Update stock
       const newQuantity = Math.max(0, (inferredItem.stock_quantity || 0) - 1);
       
       await supabase
@@ -242,6 +280,7 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
         .update({ stock_quantity: newQuantity })
         .eq('id', inferredItem.id);
       
+      // Record inventory movement
       await supabase
         .from('inventory_movements')
         .insert({
@@ -283,7 +322,8 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
   };
 
   const processCashPayment = async () => {
-    await handlePayment('CASH', cashReceived || undefined);
+    const cashAmount = parseFloat(cashReceived) || currentAmount;
+    await handlePayment('CASH', cashAmount);
   };
 
   const handleUpiPayment = () => {
@@ -299,6 +339,40 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
     handlePayment('CREDIT');
   };
 
+  const handleAddCustomProduct = async () => {
+    if (!customProduct.name || !customProduct.price || !shop) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('items')
+        .insert({
+          shop_id: shop.id,
+          name: customProduct.name,
+          base_price: parseFloat(customProduct.price),
+          stock_quantity: 1000, // High stock for custom items
+          min_stock_alert: 10,
+          max_discount_percentage: 0,
+          max_discount_fixed: 0,
+          is_active: true
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      setCustomProduct({ name: '', price: '' });
+      setShowCustomProduct(false);
+      loadItems();
+      
+      // Auto-select the new item
+      setSelectedCustomItem(data);
+      setDisplay(customProduct.price);
+    } catch (error) {
+      console.error('Error adding custom product:', error);
+      setError('Failed to add custom product');
+    }
+  };
+
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('en-IN', {
       style: 'currency',
@@ -311,11 +385,13 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
   useEffect(() => {
     if (currentAmount > 0) {
       const { item } = inferItemFromAmount(currentAmount);
-      setInferredItem(item);
+      if (!selectedCustomItem) {
+        setInferredItem(item);
+      }
     } else {
       setInferredItem(null);
     }
-  }, [display, items]);
+  }, [display, items, selectedCustomItem]);
 
   if (isLoading) {
     return (
@@ -328,22 +404,45 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
     );
   }
 
+  const numberButtons = [
+    ['1', '2', '3'],
+    ['4', '5', '6'],
+    ['7', '8', '9'],
+    ['00', '0', '⌫']
+  ];
+
   return (
-    <div className="bg-white rounded-3xl shadow-xl p-6">
+    <div className="bg-white rounded-3xl shadow-2xl p-8 max-w-md mx-auto">
+      {/* Header */}
+      <div className="text-center mb-6">
+        <h2 className="text-2xl font-bold text-gray-900 mb-2">Smart Calculator</h2>
+        <p className="text-gray-600">Enter amount to start transaction</p>
+      </div>
+
       {/* Amount Display */}
-      <div className="bg-gray-900 rounded-2xl p-6 mb-6">
+      <div className="bg-gradient-to-r from-gray-900 to-gray-800 rounded-2xl p-6 mb-6 shadow-inner">
         <div className="text-right">
-          <div className="text-3xl font-mono text-green-400 mb-2">
+          <div className="text-4xl font-mono text-green-400 mb-2 tracking-wider">
             {currentAmount > 0 ? formatCurrency(currentAmount) : '₹0'}
           </div>
-          {inferredItem && (
-            <div className="text-sm text-gray-400">
-              <div>{inferredItem.name}</div>
-              <div className="flex justify-between mt-1">
-                <span>Base: {formatCurrency(inferredItem.base_price)}</span>
-                {currentAmount < inferredItem.base_price && (
+          {(inferredItem || selectedCustomItem) && (
+            <div className="text-sm text-gray-300 space-y-1">
+              <div className="flex justify-between items-center">
+                <span className="text-blue-300">{(selectedCustomItem || inferredItem)?.name}</span>
+                {selectedCustomItem && (
+                  <button
+                    onClick={() => setSelectedCustomItem(null)}
+                    className="text-red-400 hover:text-red-300"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+              <div className="flex justify-between">
+                <span>Base: {formatCurrency((selectedCustomItem || inferredItem)?.base_price || 0)}</span>
+                {currentAmount < ((selectedCustomItem || inferredItem)?.base_price || 0) && (
                   <span className="text-orange-400">
-                    Discount: {formatCurrency(inferredItem.base_price - currentAmount)}
+                    Discount: {formatCurrency(((selectedCustomItem || inferredItem)?.base_price || 0) - currentAmount)}
                   </span>
                 )}
               </div>
@@ -352,76 +451,96 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
         </div>
       </div>
 
-      {/* Number Pad */}
-      <div className="grid grid-cols-4 gap-3 mb-6">
-        {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
-          <button
-            key={num}
-            onClick={() => handleNumberClick(num.toString())}
-            className="h-16 bg-gray-100 hover:bg-gray-200 text-xl font-semibold text-gray-800
-                       rounded-xl transition-all duration-150 active:scale-95"
-            disabled={isProcessing}
-          >
-            {num}
-          </button>
-        ))}
+      {/* Quick Actions */}
+      <div className="grid grid-cols-2 gap-3 mb-6">
         <button
-          onClick={() => handleNumberClick('00')}
-          className="h-16 bg-gray-100 hover:bg-gray-200 text-xl font-semibold text-gray-800
-                     rounded-xl transition-all duration-150 active:scale-95"
-          disabled={isProcessing}
+          onClick={() => setShowItemSelector(true)}
+          className="py-3 bg-blue-50 hover:bg-blue-100 text-blue-700 font-medium rounded-xl 
+                     transition-all duration-150 active:scale-95 flex items-center justify-center gap-2"
         >
-          00
+          <Plus size={16} />
+          Select Item
         </button>
         <button
-          onClick={() => handleNumberClick('0')}
-          className="h-16 bg-gray-100 hover:bg-gray-200 text-xl font-semibold text-gray-800
-                     rounded-xl transition-all duration-150 active:scale-95"
-          disabled={isProcessing}
+          onClick={() => setShowCustomProduct(true)}
+          className="py-3 bg-green-50 hover:bg-green-100 text-green-700 font-medium rounded-xl 
+                     transition-all duration-150 active:scale-95 flex items-center justify-center gap-2"
         >
-          0
-        </button>
-        <button
-          onClick={handleBackspace}
-          className="h-16 bg-orange-500 hover:bg-orange-600 text-white text-lg font-semibold
-                     rounded-xl transition-all duration-150 active:scale-95"
-          disabled={isProcessing}
-        >
-          ⌫
-        </button>
-        <button
-          onClick={handleClear}
-          className="h-16 bg-red-500 hover:bg-red-600 text-white text-lg font-semibold
-                     rounded-xl transition-all duration-150 active:scale-95"
-          disabled={isProcessing}
-        >
-          Clear
+          <Plus size={16} />
+          Custom Item
         </button>
       </div>
 
-      {/* Payment Buttons */}
-      {currentAmount > 0 && inferredItem && !showPaymentModes && (
+      {/* Number Pad */}
+      <div className="grid grid-cols-3 gap-4 mb-6">
+        {numberButtons.flat().map((num, index) => {
+          if (num === '⌫') {
+            return (
+              <button
+                key={index}
+                onClick={handleBackspace}
+                className="h-16 bg-gradient-to-b from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 
+                           text-white text-xl font-bold rounded-2xl transition-all duration-150 active:scale-95 
+                           shadow-lg hover:shadow-xl"
+                disabled={isProcessing}
+              >
+                ⌫
+              </button>
+            );
+          }
+
+          return (
+            <button
+              key={index}
+              onClick={() => handleNumberClick(num)}
+              className="h-16 bg-gradient-to-b from-gray-100 to-gray-200 hover:from-gray-200 hover:to-gray-300 
+                         text-xl font-bold text-gray-800 rounded-2xl transition-all duration-150 active:scale-95 
+                         shadow-lg hover:shadow-xl border border-gray-300"
+              disabled={isProcessing}
+            >
+              {num}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Action Buttons */}
+      <div className="space-y-3">
         <button
-          onClick={handleConfirmAmount}
-          className="w-full py-4 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800
-                     text-white text-lg font-semibold rounded-xl transition-all duration-200 active:scale-95"
+          onClick={handleClear}
+          className="w-full py-4 bg-gradient-to-r from-gray-500 to-gray-600 hover:from-gray-600 hover:to-gray-700
+                     text-white text-lg font-bold rounded-2xl transition-all duration-200 active:scale-95 
+                     shadow-lg hover:shadow-xl"
           disabled={isProcessing}
         >
-          Continue to Payment
+          Clear All
         </button>
-      )}
+
+        {currentAmount > 0 && (inferredItem || selectedCustomItem) && !showPaymentModes && (
+          <button
+            onClick={handleConfirmAmount}
+            className="w-full py-4 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800
+                       text-white text-lg font-bold rounded-2xl transition-all duration-200 active:scale-95 
+                       shadow-lg hover:shadow-xl"
+            disabled={isProcessing}
+          >
+            Continue to Payment
+          </button>
+        )}
+      </div>
 
       {/* Payment Mode Selection */}
       {showPaymentModes && !showCashInput && !showUpiQr && (
-        <div className="space-y-3">
-          <h3 className="text-lg font-semibold text-gray-800 text-center mb-4">
+        <div className="space-y-4 mt-6">
+          <h3 className="text-xl font-bold text-gray-800 text-center mb-6">
             Choose Payment Method
           </h3>
           
           <button
             onClick={handleCashPayment}
-            className="w-full py-4 bg-green-600 hover:bg-green-700 text-white text-lg font-semibold
-                       rounded-xl transition-all duration-150 active:scale-95 flex items-center justify-center gap-2"
+            className="w-full py-4 bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 
+                       text-white text-lg font-bold rounded-2xl transition-all duration-150 active:scale-95 
+                       flex items-center justify-center gap-3 shadow-lg hover:shadow-xl"
             disabled={isProcessing}
           >
             <Banknote size={24} />
@@ -430,8 +549,9 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
           
           <button
             onClick={handleUpiPayment}
-            className="w-full py-4 bg-purple-600 hover:bg-purple-700 text-white text-lg font-semibold
-                       rounded-xl transition-all duration-150 active:scale-95 flex items-center justify-center gap-2"
+            className="w-full py-4 bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 
+                       text-white text-lg font-bold rounded-2xl transition-all duration-150 active:scale-95 
+                       flex items-center justify-center gap-3 shadow-lg hover:shadow-xl"
             disabled={isProcessing}
           >
             <Smartphone size={24} />
@@ -440,8 +560,9 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
           
           <button
             onClick={handleCreditPayment}
-            className="w-full py-4 bg-orange-600 hover:bg-orange-700 text-white text-lg font-semibold
-                       rounded-xl transition-all duration-150 active:scale-95 flex items-center justify-center gap-2"
+            className="w-full py-4 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 
+                       text-white text-lg font-bold rounded-2xl transition-all duration-150 active:scale-95 
+                       flex items-center justify-center gap-3 shadow-lg hover:shadow-xl"
             disabled={isProcessing}
           >
             <CreditCard size={24} />
@@ -450,9 +571,10 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
           
           <button
             onClick={() => setShowPaymentModes(false)}
-            className="w-full py-3 bg-gray-500 hover:bg-gray-600 text-white font-semibold
-                       rounded-xl transition-all duration-150 active:scale-95"
+            className="w-full py-3 bg-gray-400 hover:bg-gray-500 text-white font-bold rounded-2xl 
+                       transition-all duration-150 active:scale-95 flex items-center justify-center gap-2"
           >
+            <ArrowLeft size={20} />
             Back
           </button>
         </div>
@@ -460,37 +582,129 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
 
       {/* Error Display */}
       {error && (
-        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-xl mt-4">
+        <div className="bg-red-50 border-2 border-red-200 text-red-700 px-4 py-3 rounded-xl mt-4 text-center">
+          <AlertTriangle className="inline mr-2" size={20} />
           {error}
         </div>
       )}
 
       {/* Modals */}
       
+      {/* Item Selector Modal */}
+      {showItemSelector && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full max-h-[80vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-xl font-bold text-gray-900">Select Item</h3>
+              <button
+                onClick={() => setShowItemSelector(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X size={24} />
+              </button>
+            </div>
+            
+            <div className="space-y-3 max-h-96 overflow-y-auto">
+              {items.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => {
+                    setSelectedCustomItem(item);
+                    setDisplay(item.base_price.toString());
+                    setShowItemSelector(false);
+                  }}
+                  className="w-full p-4 text-left bg-gray-50 hover:bg-gray-100 rounded-xl transition-colors"
+                >
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <p className="font-semibold text-gray-900">{item.name}</p>
+                      <p className="text-sm text-gray-600">Stock: {item.stock_quantity}</p>
+                    </div>
+                    <p className="text-lg font-bold text-blue-600">
+                      {formatCurrency(item.base_price)}
+                    </p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Custom Product Modal */}
+      {showCustomProduct && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl p-6 max-w-sm w-full">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-xl font-bold text-gray-900">Add Custom Item</h3>
+              <button
+                onClick={() => setShowCustomProduct(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X size={24} />
+              </button>
+            </div>
+            
+            <div className="space-y-4">
+              <input
+                type="text"
+                placeholder="Item Name"
+                value={customProduct.name}
+                onChange={(e) => setCustomProduct({...customProduct, name: e.target.value})}
+                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+              <input
+                type="number"
+                placeholder="Price"
+                value={customProduct.price}
+                onChange={(e) => setCustomProduct({...customProduct, price: e.target.value})}
+                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+            </div>
+
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => setShowCustomProduct(false)}
+                className="flex-1 py-3 bg-gray-500 hover:bg-gray-600 text-white font-bold rounded-xl"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleAddCustomProduct}
+                disabled={!customProduct.name || !customProduct.price}
+                className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl disabled:opacity-50"
+              >
+                Add & Use
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Discount Confirmation Modal */}
       {showDiscountWarning && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl p-6 max-w-sm w-full">
             <div className="text-center">
               <AlertTriangle className="mx-auto text-orange-500 mb-4" size={48} />
-              <h3 className="text-lg font-semibold text-gray-800 mb-2">
+              <h3 className="text-lg font-bold text-gray-800 mb-2">
                 High Discount Alert
               </h3>
               <p className="text-gray-600 mb-6">
-                This price is significantly lower than the normal rate. Are you sure you want to continue?
+                This discount exceeds the allowed limit. Owner approval required.
               </p>
               <div className="grid grid-cols-2 gap-3">
                 <button
                   onClick={() => handleDiscountConfirm(false)}
-                  className="py-3 bg-gray-500 hover:bg-gray-600 text-white font-semibold rounded-xl"
+                  className="py-3 bg-gray-500 hover:bg-gray-600 text-white font-bold rounded-xl"
                 >
-                  No, Re-enter
+                  Cancel
                 </button>
                 <button
                   onClick={() => handleDiscountConfirm(true)}
-                  className="py-3 bg-orange-600 hover:bg-orange-700 text-white font-semibold rounded-xl"
+                  className="py-3 bg-orange-600 hover:bg-orange-700 text-white font-bold rounded-xl"
                 >
-                  Yes, Continue
+                  Override
                 </button>
               </div>
             </div>
@@ -502,40 +716,40 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
       {showCashInput && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl p-6 max-w-sm w-full">
-            <h3 className="text-lg font-semibold text-gray-800 text-center mb-4">
+            <h3 className="text-lg font-bold text-gray-800 text-center mb-4">
               Cash Payment
             </h3>
             <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Amount to Pay: {formatCurrency(currentAmount)}
-              </label>
+              <p className="text-center text-2xl font-bold text-green-600 mb-4">
+                Amount: {formatCurrency(currentAmount)}
+              </p>
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Cash Received (Optional)
               </label>
               <input
                 type="number"
-                value={cashReceived || ''}
-                onChange={(e) => setCashReceived(Number(e.target.value))}
-                placeholder="Enter cash received"
-                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                value={cashReceived}
+                onChange={(e) => setCashReceived(e.target.value)}
+                placeholder={`Enter amount (min: ${formatCurrency(currentAmount)})`}
+                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-transparent"
               />
-              {cashReceived > currentAmount && (
-                <p className="text-sm text-green-600 mt-2">
-                  Change: {formatCurrency(cashReceived - currentAmount)}
+              {parseFloat(cashReceived) > currentAmount && (
+                <p className="text-sm text-green-600 mt-2 text-center">
+                  Change: {formatCurrency(parseFloat(cashReceived) - currentAmount)}
                 </p>
               )}
             </div>
             <div className="grid grid-cols-2 gap-3">
               <button
                 onClick={() => setShowCashInput(false)}
-                className="py-3 bg-gray-500 hover:bg-gray-600 text-white font-semibold rounded-xl"
+                className="py-3 bg-gray-500 hover:bg-gray-600 text-white font-bold rounded-xl"
               >
                 Back
               </button>
               <button
                 onClick={processCashPayment}
                 disabled={isProcessing}
-                className="py-3 bg-green-600 hover:bg-green-700 text-white font-semibold rounded-xl disabled:opacity-50"
+                className="py-3 bg-green-600 hover:bg-green-700 text-white font-bold rounded-xl disabled:opacity-50"
               >
                 {isProcessing ? 'Processing...' : 'Complete'}
               </button>
@@ -548,12 +762,25 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
       {showUpiQr && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl p-6 max-w-sm w-full text-center">
-            <h3 className="text-lg font-semibold text-gray-800 mb-4">
+            <h3 className="text-lg font-bold text-gray-800 mb-4">
               UPI Payment
             </h3>
-            <div className="bg-gray-100 rounded-xl p-6 mb-4">
+            <div className="bg-gray-50 rounded-xl p-6 mb-4">
               {shop?.upi_qr_url ? (
-                <img src={shop.upi_qr_url} alt="UPI QR Code" className="mx-auto max-w-48" />
+                <div>
+                  <img 
+                    src={shop.upi_qr_url} 
+                    alt="UPI QR Code" 
+                    className="mx-auto max-w-48 max-h-48 rounded-lg shadow-lg"
+                    onError={(e) => {
+                      console.error('QR Code failed to load:', shop.upi_qr_url);
+                      e.currentTarget.style.display = 'none';
+                    }}
+                  />
+                  {shop.upi_id && (
+                    <p className="text-sm text-gray-600 mt-3">UPI ID: {shop.upi_id}</p>
+                  )}
+                </div>
               ) : (
                 <div className="text-center py-8">
                   <QrCode className="mx-auto text-gray-400 mb-2" size={64} />
@@ -564,22 +791,22 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
                 </div>
               )}
             </div>
-            <p className="text-lg font-semibold text-gray-800 mb-4">
+            <p className="text-lg font-bold text-gray-800 mb-4">
               Amount: {formatCurrency(currentAmount)}
             </p>
             <div className="grid grid-cols-2 gap-3">
               <button
                 onClick={() => setShowUpiQr(false)}
-                className="py-3 bg-gray-500 hover:bg-gray-600 text-white font-semibold rounded-xl"
+                className="py-3 bg-gray-500 hover:bg-gray-600 text-white font-bold rounded-xl"
               >
                 Back
               </button>
               <button
                 onClick={confirmUpiPayment}
                 disabled={isProcessing}
-                className="py-3 bg-purple-600 hover:bg-purple-700 text-white font-semibold rounded-xl disabled:opacity-50"
+                className="py-3 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl disabled:opacity-50"
               >
-                {isProcessing ? 'Processing...' : 'Payment Received'}
+                {isProcessing ? 'Processing...' : 'Payment Done'}
               </button>
             </div>
           </div>
@@ -591,7 +818,7 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl p-6 max-w-sm w-full text-center">
             <CheckCircle className="mx-auto text-green-500 mb-4" size={64} />
-            <h3 className="text-xl font-semibold text-gray-800 mb-2">
+            <h3 className="text-xl font-bold text-gray-800 mb-2">
               Transaction Successful!
             </h3>
             <p className="text-gray-600">
@@ -606,13 +833,13 @@ export const Calculator = ({ onTransactionComplete, isOwner = false }: Calculato
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl p-6 max-w-sm w-full text-center">
             <Banknote className="mx-auto text-green-500 mb-4" size={64} />
-            <h3 className="text-xl font-semibold text-gray-800 mb-2">
+            <h3 className="text-xl font-bold text-gray-800 mb-2">
               Transaction Complete!
             </h3>
             <p className="text-gray-600 mb-2">
               Sale: {formatCurrency(currentAmount)}
             </p>
-            <p className="text-lg font-semibold text-green-600">
+            <p className="text-lg font-bold text-green-600">
               Change to Return: {formatCurrency(changeAmount)}
             </p>
           </div>

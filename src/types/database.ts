@@ -23,6 +23,9 @@ export interface Database {
           shop_id: string;
           name: string;
           passcode_hash: string;
+          phone?: string;
+          email?: string;
+          address?: string;
           is_active: boolean;
           created_at: string;
           updated_at: string;
