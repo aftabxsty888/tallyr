@@ -21,7 +21,7 @@ interface QRService {
   generateUrl: (upiString: string) => string;
 }
 
-const Calculator: React.FC<CalculatorProps> = ({ shopData, staffData, onTransaction }) => {
+export const Calculator: React.FC<CalculatorProps> = ({ shopData, staffData, onTransaction }) => {
   const [display, setDisplay] = useState('0');
   const [previousValue, setPreviousValue] = useState<number | null>(null);
   const [operation, setOperation] = useState<string | null>(null);
@@ -534,5 +534,3 @@ const Calculator: React.FC<CalculatorProps> = ({ shopData, staffData, onTransact
     </div>
   );
 };
-
-export default Calculator;
